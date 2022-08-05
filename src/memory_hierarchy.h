@@ -122,6 +122,8 @@ class Network;
 /* Base class for all memory objects (caches and memories) */
 class MemObject : public GlobAlloc {
     public:
+        // Set configuration for no man's problem solution
+        virtual void setDRAMsimConfiguration(uint32_t delayQueue){printf("enable dramsim3 in memory hierarchy. Wrong\n");} //careful! this function is a hack should not be called.
         //Returns response cycle
         virtual uint64_t access(MemReq& req) = 0;
         virtual void initStats(AggregateStat* parentStat) {}

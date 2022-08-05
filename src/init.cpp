@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <string>
 #include <sys/time.h>
+#include <sys/stat.h>
 #include <vector>
 #include "cache.h"
 #include "cache_arrays.h"
@@ -41,6 +42,7 @@
 #include "detailed_mem_params.h"
 #include "ddr_mem.h"
 #include "debug_zsim.h"
+#include "dramsim3_mem_ctrl.h"
 #include "dramsim_mem_ctrl.h"
 #include "event_queue.h"
 #include "filter_cache.h"
@@ -74,6 +76,7 @@
 #include "virt/port_virtualizer.h"
 #include "weave_md1_mem.h" //validation, could be taken out...
 #include "zsim.h"
+#include <iostream>
 
 extern void EndOfPhaseActions(); //in zsim.cpp
 
@@ -136,6 +139,8 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
             hf = new H3HashFamily(numHashes, setBits, 0xCAC7EAFFA1 + seed /*make randSeed depend on prefix*/);
         } else if (hashType == "SHA1") {
             hf = new SHA1HashFamily(numHashes);
+        } else if (hashType == "SB") {
+            hf = new SBHashFamily;
         } else {
             panic("%s: Invalid value %s on array.hash", name.c_str(), hashType.c_str());
         }
@@ -152,6 +157,10 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
         } else {
             rp = new LRUReplPolicy<false>(numLines);
         }
+    } else if (replType == "MN4LLC") {
+        rp = new MN4LLCReplPolicy(numLines);
+    } else if (replType == "MN4L2") {
+        rp = new MN4L2ReplPolicy(numLines);
     } else if (replType == "LFU") {
         rp = new LFUReplPolicy(numLines);
     } else if (replType == "LRUProfViol") {
@@ -359,6 +368,11 @@ MemObject* BuildMemoryController(Config& config, uint32_t lineSize, uint32_t fre
         string outputDir = config.get<const char*>("sys.mem.outputDir");
         string traceName = config.get<const char*>("sys.mem.traceName");
         mem = new DRAMSimMemory(dramTechIni, dramSystemIni, outputDir, traceName, capacity, cpuFreqHz, latency, domain, name);
+    } else if (type == "DRAMsim3") {
+        int cpuFreqMHz = frequency;
+        string dramIni = config.get<const char*>("sys.mem.configIni");
+        string outputDir = config.get<const char*>("sys.mem.outputDir");
+        mem = new DRAMsim3Memory(dramIni, outputDir, cpuFreqMHz, domain, name);
     } else if (type == "Detailed") {
         // FIXME(dsm): Don't use a separate config file... see DDRMemory
         g_string mcfg = config.get<const char*>("sys.mem.paramFile", "");
@@ -680,6 +694,10 @@ static void InitSystem(Config& config) {
                     dc->setSourceId(coreIdx);
                     assignedCaches[dcache]++;
 
+                    // section added for no mans land (Rommel Sanchez et al)
+                    uint32_t delayQueue = config.get<uint32_t>("sys.mem.delayQueue", 0);
+                    dc->setAncestors(mems, delayQueue);
+
                     //Build the core
                     if (type == "Simple") {
                         core = new (&simpleCores[j]) SimpleCore(ic, dc, name);
@@ -783,6 +801,75 @@ static void PreInitStats() {
     zinfo->rootStat->init("root", "Stats");
 }
 
+// If the simulation gets executed in the same path as in the previous run
+// all the h5 files are getting "planked" on the new execution. 
+// this routine will prevent this behavior by naming differently the h5 file 
+// for subsequent calls
+
+ char * ZsimFileNameForStats( ZsimStatType type , string pathStr ) {
+
+
+	struct stat mdFromFile;  
+	time_t thisDate;
+	struct tm *infoDate;
+
+	char date_cbuf[16];
+	
+	thisDate = time(NULL);
+	infoDate = localtime(&thisDate);
+
+	if (infoDate != NULL ) { 
+		std::snprintf(date_cbuf,15, "%02d%02d%02d_%02d%02d%02d", 
+			infoDate->tm_mday, infoDate->tm_mon, infoDate->tm_year - 2000,
+			infoDate->tm_hour, infoDate->tm_min, infoDate->tm_sec);
+	} else { 
+		struct timeval nixTime;
+
+		gettimeofday(&nixTime, NULL);
+		// wont check the value but another validation wont hurt.
+		std::snprintf(date_cbuf,15, "%ld", nixTime.tv_sec );
+	
+	}
+
+	printf("Suffix: %s\xa", date_cbuf);
+	string filenameSuffix(&date_cbuf[0]);
+
+
+	switch(type) {
+	case ZSIM:
+		if (  stat("zsim.h5", &mdFromFile)  == 0 ) {
+				return gm_strdup((pathStr + "zsim_" + filenameSuffix + ".h5" ).c_str());
+		}
+		return gm_strdup((pathStr + "zsim.h5" ).c_str());
+	break;
+	case ZSIM_EV:
+		if (  stat("zsim-ev.h5", &mdFromFile)  == 0 ) {
+				return gm_strdup((pathStr + "zsim-ev_" + filenameSuffix + ".h5" ).c_str());
+		}
+		return gm_strdup((pathStr + "zsim-ev.h5" ).c_str());
+	break;
+	case ZSIM_CMP:
+		if (  stat("zsim-cmp.h5", &mdFromFile)  == 0 ) {
+				return gm_strdup((pathStr + "zsim-cmp_" + filenameSuffix + ".h5" ).c_str());
+		}
+		return gm_strdup((pathStr + "zsim-cmp.h5" ).c_str());
+	break;
+	case ZSIM_OUT:
+		if (  stat("zsim.out", &mdFromFile)  == 0 ) {
+				return gm_strdup((pathStr + "zsim_" + filenameSuffix + ".out" ).c_str());
+		}
+		return gm_strdup((pathStr + "zsim.out" ).c_str());
+	break;
+	
+	default:
+		return gm_strdup((pathStr + "untitled.mp3").c_str());
+	break;
+	}
+
+	return NULL;
+
+}
+
 static void PostInitStats(bool perProcessDir, Config& config) {
     zinfo->rootStat->makeImmutable();
     zinfo->trigger = 15000;
@@ -791,10 +878,16 @@ static void PostInitStats(bool perProcessDir, Config& config) {
     pathStr += "/";
 
     // Absolute paths for stats files. Note these must be in the global heap.
+/*
     const char* pStatsFile = gm_strdup((pathStr + "zsim.h5").c_str());
     const char* evStatsFile = gm_strdup((pathStr + "zsim-ev.h5").c_str());
     const char* cmpStatsFile = gm_strdup((pathStr + "zsim-cmp.h5").c_str());
     const char* statsFile = gm_strdup((pathStr + "zsim.out").c_str());
+*/
+    const char* pStatsFile   =  ZsimFileNameForStats(ZSIM, pathStr);
+    const char* evStatsFile  =  ZsimFileNameForStats(ZSIM_EV, pathStr);
+    const char* cmpStatsFile =  ZsimFileNameForStats(ZSIM_CMP, pathStr);
+    const char* statsFile    =  ZsimFileNameForStats(ZSIM_OUT, pathStr);
 
     if (zinfo->statsPhaseInterval) {
         const char* periodicStatsFilter = config.get<const char*>("sim.periodicStatsFilter", "");
@@ -855,6 +948,11 @@ static void InitGlobalStats() {
     ProxyStat* phaseStat = new ProxyStat();
     phaseStat->init("phase", "Simulated phases", &zinfo->numPhases);
     zinfo->rootStat->append(phaseStat);
+   
+    ProxyStat* reqCyclesStat = new ProxyStat();
+    reqCyclesStat->init("reqCycles", "Requeue Cycles", &zinfo->requeueCycles);
+    zinfo->rootStat->append(reqCyclesStat);
+
 }
 
 

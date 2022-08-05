@@ -29,6 +29,52 @@
 #include "log.h"
 #include "mtrand.h"
 
+
+//David: Sandy Bridge hash, based on the 4 core model, need to update to 8 cores
+//val is the address
+uint64_t SBHashFamily::hash(uint32_t id, uint64_t val) {
+    uint64_t res = val;
+
+	//Taken from Reverse Engineering Intel Last_level Cache Complex Addressing Using Performance Counters
+    uint8_t h1_bits[] = {6,10,12,14,16,17,18,20,22,24,25,26,27,28,30,32,33,35,36};
+    uint8_t h2_bits[] = {7,11,13,15,17,19,20,21,22,23,24,26,28,29,31,33,34,35,37};
+    uint8_t h3_bits[] = {8,12,13,16,19,22,23,26,27,30,31,34,35,36,37};
+
+    //IMPORTANT: This is a work in progress, reliable from 92 addresses upwards, 56% accuracy
+	//static const int h1_bits[] = {18,21,22,25,27};
+	//static const int h2_bits[] = {17,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34};
+	//static const int h3_bits[] = {25,26,29,30};
+
+    int8_t count;
+    //h1
+    count = sizeof(h1_bits) / sizeof(h1_bits[0]);
+    int h1 = 0;
+    for (int8_t i = 0; i < count; i++) {
+      h1 ^= (val >> (h1_bits[i]-6)) & 1;
+    }
+    //h2
+    count = sizeof(h2_bits) / sizeof(h2_bits[0]);
+    int8_t h2 = 0;
+    for (int8_t i = 0; i < count; i++) {
+      h2 ^= (val >> (h2_bits[i]-6)) & 1;
+    }
+    count = sizeof(h3_bits) / sizeof(h3_bits[0]);
+    int h3 = 0;
+    for (int8_t i = 0; i < count; i++) {
+      h3 ^= (val >> (h3_bits[i]-6)) & 1;
+    }
+    uint64_t hash = h1 | h2 << 1 | h3 << 2;
+    hash &= 7;
+
+    //Discard bits 17-64, but remember, we already shifted by 6
+    res &= 2047; //Cache set
+
+    //Now add the bits we calculated
+    res |=  hash << 11;
+
+    return res;
+}
+
 H3HashFamily::H3HashFamily(uint32_t numFunctions, uint32_t outputBits, uint64_t randSeed) : numFuncs(numFunctions) {
     MTRand rnd(randSeed);
 
@@ -79,6 +125,8 @@ H3HashFamily::~H3HashFamily() {
  */
 uint64_t H3HashFamily::hash(uint32_t id, uint64_t val) {
     uint64_t res = 0;
+	uint64_t orig = val;
+	val >>= 11;
     assert(id >= 0 && id < numFuncs);
 
     // 8-way unrolled loop
@@ -119,7 +167,10 @@ uint64_t H3HashFamily::hash(uint32_t id, uint64_t val) {
     }
 
     //info("0x%lx", res);
-
+	res &= 7;
+	res <<= 11;
+	orig &= 2047;
+	res |= orig;
     return res;
 }
 

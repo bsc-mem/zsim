@@ -48,6 +48,10 @@ def buildSim(cppFlags, dir, type, pgo=None):
     # NOTE (dsm 16 Apr 2015): Update flags code to support Pin 2.14 while retaining backwards compatibility
     env["CPPFLAGS"] += " -g -std=c++0x -Wall -Wno-unknown-pragmas -fomit-frame-pointer -fno-stack-protector"
     env["CPPFLAGS"] += " -MMD -DBIGARRAY_MULTIPLIER=1 -DUSING_XED -DTARGET_IA32E -DHOST_IA32E -fPIC -DTARGET_LINUX"
+    # NOTE: (mgao Jan 2017): Pin 2.14 requires ABI version of 1002, while gcc-5 and later bumps the API version.
+    # Switch to gcc-4.x by using -fabi-version=2
+    # FIXME(mgao): update this when upgraded to Pin 3.x
+    env["CPPFLAGS"] += " -fabi-version=2  -D_GLIBCXX_USE_CXX11_ABI=0"
 
     # Pin 2.12+ kits have changed the layout of includes, detect whether we need
     # source/include/ or source/include/pin/
@@ -74,8 +78,9 @@ def buildSim(cppFlags, dir, type, pgo=None):
     # Uncomment to get logging messages to stderr
     ##env["CPPFLAGS"] += " -DDEBUG=1"
 
-    # Be a Warning Nazi? (recommended)
-    env["CPPFLAGS"] += " -Werror "
+    # Disabled this. Warnings are fine.
+    # Originally was uncommented: Be a Warning Nazi? (recommended)
+    # env["CPPFLAGS"] += " -Werror "
 
     # Enables lib and harness to use the same info/log code,
     # but only lib uses pin locks for thread safety
@@ -140,10 +145,43 @@ def buildSim(cppFlags, dir, type, pgo=None):
         env["PINLIBS"] += ["dramsim"]
         env["CPPFLAGS"] += " -D_WITH_DRAMSIM_=1 "
 
+    if "DRAMSIM3PATH" in os.environ:
+        DRAMSIM3PATH = os.environ["DRAMSIM3PATH"]
+        env["LINKFLAGS"] += " -Wl,-R" + DRAMSIM3PATH
+        env["PINLIBPATH"] += [DRAMSIM3PATH]
+        env["CPPPATH"] += [DRAMSIM3PATH + "/src"]
+        env["PINLIBS"] += ["dramsim3"]
+        env["CPPFLAGS"] += " -D_WITH_DRAMSIM3_=1 "
+
     env["CPPPATH"] += ["."]
 
     # HDF5
+    # BSC code code for HDF to solve some compile errors on MareNostrum 3 clusters.
+
     env["PINLIBS"] += ["hdf5", "hdf5_hl"]
+    if "HDF5_HOME" in os.environ:
+	# HDF5
+	#env['CPPPATH'] += [' -I' + str(os.environ['HDF5_HOME']) + '/include' + ' -I' +  str(os.environ['LIBCONFIGDIR'])]
+	env.Append(CPPFLAGS = ' -I' + joinpath(os.environ["HDF5_HOME"] , 'include'))
+	env.Append(LINKFLAGS = ' -L' + joinpath(os.environ["HDF5_HOME"] , 'lib'))
+	env.Append(CPPFLAGS = ' -I' + joinpath(os.environ['LIBCONFIG_HOME'], 'include'))
+	env.Append(LINKFLAGS = ' -L' + joinpath(os.environ['LIBCONFIG_HOME'], 'lib'))
+	#env.Append(LINKFLAGS = ' -Wl,-R' + joinpath(os.environ['LIBCONFIG_HOME'], 'lib'))
+	#env.Append(LINKFLAGS = ' -Wl,-R' + joinpath(os.environ['HDF5_HOME'], 'lib'))
+
+
+#shangly defined hdf as following
+#    conf = Configure(Environment(), conf_dir=joinpath(
+#        buildDir, ".sconf_temp"), log_file=joinpath(buildDir, "sconf.log"))
+#    if conf.CheckLib('hdf5') and conf.CheckLib('hdf5_hl'):
+#        env["PINLIBS"] += ["hdf5", "hdf5_hl"]
+#    elif conf.CheckLib('hdf5_serial') and conf.CheckLib('hdf5_serial_hl'):
+#        # Serial version, in Ubuntu 15.04 and later.
+#        env["PINLIBS"] += ["hdf5_serial", "hdf5_serial_hl"]
+#        env["CPPFLAGS"] += ' -DHDF5INCPREFIX="hdf5/serial/"'
+#    else:
+#        print "ERROR: You need to install libhdf5 in the system"
+#        sys.exit(1)
 
     # Harness needs these defined
     env["CPPFLAGS"] += ' -DPIN_PATH="' + joinpath(PINPATH, "intel64/bin/pinbin") + '" '

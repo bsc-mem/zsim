@@ -39,7 +39,7 @@ class HashFamily : public GlobAlloc {
 
 class H3HashFamily : public HashFamily {
     private:
-        const uint32_t numFuncs;
+        uint32_t numFuncs;
         uint32_t resShift;
         uint64_t* hMatrix;
     public:
@@ -65,6 +65,13 @@ class SHA1HashFamily : public HashFamily {
 class IdHashFamily : public HashFamily {
     public:
         inline uint64_t hash(uint32_t id, uint64_t val) {return val;}
+};
+
+//David: Sandy bridge hash
+class SBHashFamily : public HashFamily {
+    //private:
+    public:
+        uint64_t hash(uint32_t id, uint64_t val);
 };
 
 #endif  // HASH_H_

@@ -32,6 +32,7 @@
 #include "debug.h"
 #include "locks.h"
 #include "pad.h"
+#include <iostream> // for debug added
 
 class Core;
 class Scheduler;
@@ -114,6 +115,11 @@ struct GlobSimInfo {
     //Writable, rarely read, unshared in a single phase
     uint64_t numPhases;
     uint64_t globPhaseCycles; //just numPhases*phaseCycles. It behooves us to precompute it, since it is very frequently used in tracing code.
+    uint64_t requeueCycles;
+#if BBL_PROFILING
+	 uint64_t dumpBblcontrol;
+
+#endif
 
     uint64_t procEventualDumps;
 

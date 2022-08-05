@@ -57,7 +57,7 @@ class FilterCache : public Cache {
         uint32_t numSets;
         uint32_t srcId; //should match the core
         uint32_t reqFlags;
-
+        g_vector<MemObject*> ancestors; // Bypass cache system with a pointer to send informaiton to DRAMsim3
         lock_t filterLock;
         uint64_t fGETSHit, fGETXHit;
 
@@ -76,6 +76,15 @@ class FilterCache : public Cache {
             reqFlags = 0;
         }
 
+        // Configure No man's land delay (Rommel Sanchez et al)
+        void setAncestors(const g_vector<MemObject*>& _parents, uint32_t delayQueue){
+            ancestors.resize(_parents.size());
+            for (uint32_t p = 0; p < ancestors.size(); p++) {
+                ancestors[p] = _parents[p];
+                ancestors[p]->setDRAMsimConfiguration(delayQueue);
+            }
+        }
+
         void setSourceId(uint32_t id) {
             srcId = id;
         }
@@ -87,14 +96,12 @@ class FilterCache : public Cache {
         void initStats(AggregateStat* parentStat) {
             AggregateStat* cacheStat = new AggregateStat();
             cacheStat->init(name.c_str(), "Filter cache stats");
-
             ProxyStat* fgetsStat = new ProxyStat();
             fgetsStat->init("fhGETS", "Filtered GETS hits", &fGETSHit);
             ProxyStat* fgetxStat = new ProxyStat();
             fgetxStat->init("fhGETX", "Filtered GETX hits", &fGETXHit);
             cacheStat->append(fgetsStat);
             cacheStat->append(fgetxStat);
-
             initCacheStats(cacheStat);
             parentStat->append(cacheStat);
         }

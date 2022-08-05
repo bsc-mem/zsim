@@ -41,23 +41,10 @@
 #define DEBUG_MSG(args...)
 //#define DEBUG_MSG(args...) info(args)
 
-// Core parameters
-// TODO(dsm): Make OOOCore templated, subsuming these
-
-// Stages --- more or less matched to Westmere, but have not seen detailed pipe diagrams anywhare
-#define FETCH_STAGE 1
-#define DECODE_STAGE 4  // NOTE: Decoder adds predecode delays to decode
-#define ISSUE_STAGE 7
-#define DISPATCH_STAGE 13  // RAT + ROB + RS, each is easily 2 cycles
-
-#define L1D_LAT 4  // fixed, and FilterCache does not include L1 delay
-#define FETCH_BYTES_PER_CYCLE 16
-#define ISSUES_PER_CYCLE 4
-#define RF_READS_PER_CYCLE 3
 
 OOOCore::OOOCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name) : Core(_name), l1i(_l1i), l1d(_l1d), cRec(0, _name) {
     decodeCycle = DECODE_STAGE;  // allow subtracting from it
-    curCycle = 0;
+    prevCurCycle = curCycle = 0;
     phaseEndCycle = zinfo->phaseLength;
 
     for (uint32_t i = 0; i < MAX_REGISTERS; i++) {
@@ -72,6 +59,8 @@ OOOCore::OOOCore(FilterCache* _l1i, FilterCache* _l1d, g_string& _name) : Core(_
     branchPc = 0;
 
     instrs = uops = bbls = approxInstrs = mispredBranches = 0;
+    retiredUops = idqNotDeliveredStalls = intMiscRecoveryStalls = 0;
+    fullStores = fullLoads = 0;
 
     for (uint32_t i = 0; i < FWD_ENTRIES; i++) fwdArray[i].set((Address)(-1L), 0);
 }
@@ -91,13 +80,23 @@ void OOOCore::initStats(AggregateStat* parentStat) {
     ProxyStat* instrsStat = new ProxyStat();
     instrsStat->init("instrs", "Simulated instructions", &instrs);
     ProxyStat* uopsStat = new ProxyStat();
-    uopsStat->init("uops", "Retired micro-ops", &uops);
+    uopsStat->init("uops", "issued micro-ops", &uops);
     ProxyStat* bblsStat = new ProxyStat();
     bblsStat->init("bbls", "Basic blocks", &bbls);
     ProxyStat* approxInstrsStat = new ProxyStat();
     approxInstrsStat->init("approxInstrs", "Instrs with approx uop decoding", &approxInstrs);
     ProxyStat* mispredBranchesStat = new ProxyStat();
     mispredBranchesStat->init("mispredBranches", "Mispredicted branches", &mispredBranches);
+
+    ProxyStat *retiredUopsStat = new ProxyStat() ;
+    retiredUopsStat->init("uops executed", "Executed microoperations", &retiredUops);
+
+    ProxyStat *idqNotDeliveredStat = new ProxyStat();
+    idqNotDeliveredStat->init("IdqNotDelivered", "Stalls no uop delivered when no Bkend Stall", &idqNotDeliveredStalls );
+
+    ProxyStat *intMiscRecoveryStat = new ProxyStat() ;
+    intMiscRecoveryStat->init("IntMiscRecoveryCycles", "Stalls waiting machine clears", &intMiscRecoveryStalls);
+	 
 
     coreStat->append(cyclesStat);
     coreStat->append(cCyclesStat);
@@ -106,6 +105,11 @@ void OOOCore::initStats(AggregateStat* parentStat) {
     coreStat->append(bblsStat);
     coreStat->append(approxInstrsStat);
     coreStat->append(mispredBranchesStat);
+
+    coreStat->append(idqNotDeliveredStat);
+    coreStat->append(intMiscRecoveryStat);
+    coreStat->append(retiredUopsStat);
+
 
 #ifdef OOO_STALL_STATS
     profFetchStalls.init("fetchStalls",  "Fetch stalls");  coreStat->append(&profFetchStalls);
@@ -191,7 +195,12 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
 #endif
             curCycleIssuedUops = 0;
             curCycleRFReads = 0;
-            for (uint32_t i = 0; i < cdDiff; i++) insWindow.advancePos(curCycle);
+            for (uint32_t i = 0; i < cdDiff; i++) { 
+					insWindow.advancePos(curCycle);
+					if  ( !insWindow.isBackendStall(uop->type) ) {
+						idqNotDeliveredStalls++	;
+					}
+				}
         }
         prevDecCycle = uop->decCycle;
         uopQueue.markLeave(curCycle);
@@ -201,6 +210,10 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
 #ifdef OOO_STALL_STATS
             profIssueStalls.inc();
 #endif
+
+				if  ( !insWindow.isBackendStall(uop->type) ) {
+					idqNotDeliveredStalls+= ( 1 + curCycleIssuedUops - ISSUES_PER_CYCLE);
+				}
             // info("Advancing due to uop issue width");
             curCycleIssuedUops = 0;
             curCycleRFReads = 0;
@@ -222,6 +235,10 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
             curCycleRFReads -= RF_READS_PER_CYCLE;
             curCycleIssuedUops = 0;  // or 1? that's probably a 2nd-order detail
             insWindow.advancePos(curCycle);
+				if  ( !insWindow.isBackendStall(uop->type) ) {
+					if ( curCycle > c0 ) idqNotDeliveredStalls += (curCycle - c0);
+					if ( curCycle > c1 ) idqNotDeliveredStalls += (curCycle - c1);
+				}
         }
 
         uint64_t c2 = rob.minAllocCycle();
@@ -232,14 +249,20 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
         // Model RAT + ROB + RS delay between issue and dispatch
         uint64_t dispatchCycle = MAX(cOps, MAX(c2, c3) + (DISPATCH_STAGE - ISSUE_STAGE));
 
-        // info("IW 0x%lx %d %ld %ld %x", bblAddr, i, c2, dispatchCycle, uop->portMask);
+        // info("IWP 0x%lx %d %ld cc:%ld dc:%ld %x", bblAddr, i, c2, c3, dispatchCycle, uop->portMask);
         // NOTE: Schedule can adjust both cur and dispatch cycles
-        insWindow.schedule(curCycle, dispatchCycle, uop->portMask, uop->extraSlots);
+        insWindow.schedule(curCycle, dispatchCycle, uop->portMask, uop->extraSlots );
 
+        //info("IWD 0x%lx %d %ld cc:%ld dc:%ld %x", bblAddr, i, c2, c3, dispatchCycle, uop->portMask);
+        // NOTE: Schedule can adjust both cur and dispatch cycles
         // If we have advanced, we need to reset the curCycle counters
         if (curCycle > c3) {
+
             curCycleIssuedUops = 0;
             curCycleRFReads = 0;
+	    if ( !insWindow.isBackendStall(uop->type) ) {			
+		idqNotDeliveredStalls += (curCycle- c3);
+	    }			
         }
 
         uint64_t commitCycle;
@@ -257,7 +280,7 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
                     uint64_t lqCycle = loadQueue.minAllocCycle();
                     if (lqCycle > dispatchCycle) {
 #ifdef LSU_IW_BACKPRESSURE
-                        insWindow.poisonRange(curCycle, lqCycle, 0x4 /*PORT_2, loads*/);
+                        insWindow.poisonRange(curCycle, lqCycle, 0x4 ); // PORT_2, loads
 #endif
                         dispatchCycle = lqCycle;
                     }
@@ -292,6 +315,7 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
 
             case UOP_STORE:
                 {
+		    //info("StoreS %ld sqc:%ld lstaddrc:%ld", dispatchCycle, storeQueue.minAllocCycle(), lastStoreAddrCommitCycle);
                     // dispatchCycle = MAX(storeQueue.minAllocCycle(), dispatchCycle);
                     uint64_t sqCycle = storeQueue.minAllocCycle();
                     if (sqCycle > dispatchCycle) {
@@ -303,32 +327,34 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
 
                     // Wait for all previous store addresses to be resolved (not just ours :))
                     dispatchCycle = MAX(lastStoreAddrCommitCycle+1, dispatchCycle);
-
+						  //dispatchCycle = lastStoreAddrCommitCycle;
                     Address addr = storeAddrs[storeIdx++];
                     uint64_t reqSatisfiedCycle = l1d->store(addr, dispatchCycle) + L1D_LAT;
+						  reqSatisfiedCycle += uop->extraLat;
                     cRec.record(curCycle, dispatchCycle, reqSatisfiedCycle);
 
                     // Fill the forwarding table
                     fwdArray[(addr>>2) & (FWD_ENTRIES-1)].set(addr, reqSatisfiedCycle);
 
                     commitCycle = reqSatisfiedCycle;
-                    lastStoreCommitCycle = MAX(lastStoreCommitCycle, reqSatisfiedCycle);
+                    lastStoreCommitCycle = MAX(lastStoreCommitCycle+1, reqSatisfiedCycle);
                     storeQueue.markRetire(commitCycle);
-                }
+              }
                 break;
 
             case UOP_STORE_ADDR:
-                commitCycle = dispatchCycle + uop->lat;
-                lastStoreAddrCommitCycle = MAX(lastStoreAddrCommitCycle, commitCycle);
+              commitCycle = dispatchCycle + uop->lat;
+              uops--;	// Store addre wil complete along with STORE itself. two ops are generated at exect but no at issuetime
+              lastStoreAddrCommitCycle = MAX(lastStoreAddrCommitCycle+1, commitCycle);
+	       //info("StAddrE %ld sqc:%ld cc:%ld lstaddrc:%ld",  dispatchCycle, storeQueue.minAllocCycle(), commitCycle, lastStoreAddrCommitCycle);
                 break;
-
             //case UOP_FENCE:  //make gcc happy
             default:
                 assert((UopType) uop->type == UOP_FENCE);
                 commitCycle = dispatchCycle + uop->lat;
                 // info("%d %ld %ld", uop->lat, lastStoreAddrCommitCycle, lastStoreCommitCycle);
                 // force future load serialization
-                lastStoreAddrCommitCycle = MAX(commitCycle, MAX(lastStoreAddrCommitCycle, lastStoreCommitCycle + uop->lat));
+                lastStoreAddrCommitCycle = MAX(commitCycle, MAX(lastStoreAddrCommitCycle, lastStoreCommitCycle + uop->lat+1));
                 // info("%d %ld %ld X", uop->lat, lastStoreAddrCommitCycle, lastStoreCommitCycle);
         }
 
@@ -341,7 +367,7 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
 
         lastCommitCycle = commitCycle;
 
-        //info("0x%lx %3d [%3d %3d] -> [%3d %3d]  %8ld %8ld %8ld %8ld", bbl->addr, i, uop->rs[0], uop->rs[1], uop->rd[0], uop->rd[1], decCycle, c3, dispatchCycle, commitCycle);
+       //info("0x%lx %3d [%3d %3d] -> [%3d %3d]  %8lu %8lu %8lu %8lu", bbl->addr, i, uop->rs[0], uop->rs[1], uop->rd[0], uop->rd[1], (long unsigned int) curCycleIssuedUops, (long unsigned int)c3, (long unsigned int)dispatchCycle, (long unsigned int)commitCycle);
     }
 
     instrs += bblInstrs;
@@ -350,13 +376,16 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
     approxInstrs += bbl->approxInstrs;
 
 #ifdef BBL_PROFILING
-    if (approxInstrs) Decoder::profileBbl(bbl->bblIdx);
+	 //Decoder::profileBbl(bbl->bblIdx);
+    //if (approxInstrs) Decoder::profileBbl(bbl->bblIdx);
 #endif
-
+    //info("loadIdx(%d), loads (%d)", loadIdx, loads);
     // Check full match between expected and actual mem ops
     // If these assertions fail, most likely, something's off in the decoder
-    assert_msg(loadIdx == loads, "%s: loadIdx(%d) != loads (%d)", name.c_str(), loadIdx, loads);
-    assert_msg(storeIdx == stores, "%s: storeIdx(%d) != stores (%d)", name.c_str(), storeIdx, stores);
+//    assert_msg(loadIdx == loads, "%s: loadIdx(%d) != loads (%d), bbl %lx", name.c_str(), loadIdx, loads, bblAddr);
+//    assert_msg(storeIdx == stores, "%s: storeIdx(%d) != stores (%d), bbl %lx", name.c_str(), storeIdx, stores, bblAddr);
+    fullLoads += loads;
+    fullStores += stores;
     loads = stores = 0;
 
 
@@ -372,10 +401,12 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
     // Model fetch-decode delay (fixed, weak predec/IQ assumption)
     uint64_t fetchCycle = decodeCycle - (DECODE_STAGE - FETCH_STAGE);
     uint32_t lineSize = 1 << lineBits;
-
+    retiredUops += bbl->uops;
+ 
     // Simulate branch prediction
     if (branchPc && !branchPred.predict(branchPc, branchTaken)) {
         mispredBranches++;
+			retiredUops -= bbl->uops;
 
         /* Simulate wrong-path fetches
          *
@@ -397,22 +428,28 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
          * bound, assume a completely backpressured IQ (18 instrs), uop queue
          * (28 uops), IW (36 uops), and 16B instr length predecoder buffer. At
          * ~3.5 bytes/instr, 1.2 uops/instr, this is about 5 64-byte lines.
+         * David: This is updated to reflect sandy Bridge:
+         * IQ 18?, uopq 28? IW 54, 16B instr length predecoder. ? Means I'm not sure
+         * The calculation is (18*3.5+(28+54)*3.5/1.2+16)/64 = 4.97. So it continues to be right.
          */
 
         // info("Mispredicted branch, %ld %ld %ld | %ld %ld", decodeCycle, curCycle, lastCommitCycle,
         //         lastCommitCycle-decodeCycle, lastCommitCycle-curCycle);
         Address wrongPathAddr = branchTaken? branchNotTakenNpc : branchTakenNpc;
         uint64_t reqCycle = fetchCycle;
+			uint64_t respCycle = 0;
         for (uint32_t i = 0; i < 5*64/lineSize; i++) {
             uint64_t fetchLat = l1i->load(wrongPathAddr + lineSize*i, curCycle) - curCycle;
             cRec.record(curCycle, curCycle, curCycle + fetchLat);
-            uint64_t respCycle = reqCycle + fetchLat;
+            respCycle = reqCycle + fetchLat;
             if (respCycle > lastCommitCycle) {
                 break;
             }
             // Model fetch throughput limit
             reqCycle = respCycle + lineSize/FETCH_BYTES_PER_CYCLE;
         }
+		  if ( branchTaken == false)
+			intMiscRecoveryStalls+=( respCycle - fetchCycle);
 
         fetchCycle = lastCommitCycle;
     }
@@ -436,7 +473,9 @@ inline void OOOCore::bbl(Address bblAddr, BblInfo* bblInfo) {
     uint64_t minFetchDecCycle = fetchCycle + (DECODE_STAGE - FETCH_STAGE);
     if (minFetchDecCycle > decodeCycle) {
 #ifdef OOO_STALL_STATS
-        profFetchStalls.inc(decodeCycle - minFetchDecCycle);
+        //profFetchStalls.inc(decodeCycle - minFetchDecCycle);
+			profFetchStalls.inc(minFetchDecCycle-decodeCycle);
+		  idqNotDeliveredStalls += (minFetchDecCycle-decodeCycle);
 #endif
         decodeCycle = minFetchDecCycle;
     }
@@ -491,12 +530,14 @@ void OOOCore::PredLoadFunc(THREADID tid, ADDRINT addr, BOOL pred) {
     OOOCore* core = static_cast<OOOCore*>(cores[tid]);
     if (pred) core->load(addr);
     else core->predFalseMemOp();
+    //core->load(addr);
 }
 
 void OOOCore::PredStoreFunc(THREADID tid, ADDRINT addr, BOOL pred) {
     OOOCore* core = static_cast<OOOCore*>(cores[tid]);
     if (pred) core->store(addr);
     else core->predFalseMemOp();
+    //core->store(addr);
 }
 
 void OOOCore::BblFunc(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {

@@ -30,6 +30,8 @@
 #include <queue>
 #include <string>
 #include "core.h"
+#include "decoder.h"
+
 #include "g_std/g_multimap.h"
 #include "memory_hierarchy.h"
 #include "ooo_core_recorder.h"
@@ -129,14 +131,43 @@ class WindowStructure {
             occupancy = 0;
         }
 
+		#define ScheduleStall(port) ( (((uint8_t)(curWin[curPos].occUnits) && ((uint8_t) port)) != port)? false:true )
+		
+		 bool isBackendStall(UopType ut){  
+			 
+			 switch( ut ) {
+				case UOP_GENERAL:	
+					return ScheduleStall(PORTS_015);
+				break;
+				case UOP_LOAD:
+					return ScheduleStall(PORTS_23);
+				break;
+				case UOP_STORE:
+					return ScheduleStall(PORT_4);
+				break;
+				case UOP_STORE_ADDR:
+					return ScheduleStall(PORTS_23);
+				break;
+				case UOP_FENCE:
+				default:
+					return ScheduleStall(PORTS_ALL_SNB);
+				break;
+			 }
+		 }
 
-        void schedule(uint64_t& curCycle, uint64_t& schedCycle, uint8_t portMask, uint32_t extraSlots = 0) {
+	void schedule(uint64_t& curCycle, uint64_t& schedCycle, uint8_t portMask, uint32_t extraSlots = 0) {
             if (!extraSlots) {
-                scheduleInternal<true, false>(curCycle, schedCycle, portMask);
+		scheduleInternal<true, false>(curCycle, schedCycle, portMask);
             } else {
                 scheduleInternal<true, true>(curCycle, schedCycle, portMask);
                 uint64_t extraSlotCycle = schedCycle+1;
-                uint8_t extraSlotPortMask = 1 << lastPort;
+                uint8_t extraSlotPortMask =  0 ; 
+					 // 1 << lastPort;
+					 if ( ( portMask & PORT_2 )  | 
+							( portMask & PORT_3 )  ) {  
+							extraSlotPortMask = portMask; 
+					  }  else 
+							extraSlotPortMask = 1 << lastPort;
                 // This is not entirely accurate, as an instruction may have been scheduled already
                 // on this port and we'll have a non-contiguous allocation. In practice, this is rare.
                 for (uint32_t i = 0; i < extraSlots; i++) {
@@ -206,15 +237,55 @@ class WindowStructure {
     private:
         template <bool touchOccupancy, bool recordPort>
         void scheduleInternal(uint64_t& curCycle, uint64_t& schedCycle, uint8_t portMask) {
+			
+            uint32_t curWinPos = curPos;
+
             // If the window is full, advance curPos until it's not
             while (touchOccupancy && occupancy == WSZ) {
                 advancePos(curCycle);
             }
 
             uint32_t delay = (schedCycle > curCycle)? (schedCycle - curCycle) : 0;
+            curWinPos = curPos + delay;
 
-            // Schedule, progressively increasing delay if we cannot find a slot
-            uint32_t curWinPos = curPos + delay;
+
+	    // On sandybridge 2 Loads and 1 Store could be completed on the same Cycle. 
+	    // If the windows allows it than it should procceed with the scheduling
+	    uint32_t nextWinPos =  0;
+/*
+			if ( ((portMask & PORT_2)>>2) | ((portMask & PORT_3)>>3) ){  
+	
+				uint8_t availMask  = 0;
+
+				if ( curWinPos < H )
+					availMask = (~curWin[curWinPos].occUnits);
+				else 
+					availMask = (~nextWin[nextWinPos].occUnits);
+
+				if ( ((availMask & PORT_2)>>2) ^ ((availMask & PORT_3)>>3) ) {
+					if (curWinPos < H){
+						if ( trySchedule<touchOccupancy, recordPort>(curWin[curWinPos], portMask) ) {
+							if ( touchOccupancy ) occupancy++;
+							return;
+						}  else {
+							curWinPos++;
+						}
+
+					} else {
+						nextWinPos = curWinPos - H;
+						if ( trySchedule<touchOccupancy, recordPort>(nextWin[nextWinPos], portMask) ) {
+							if ( touchOccupancy ) occupancy++;
+							return;
+						}  else {
+							curWinPos++;
+						}
+ 
+					}
+				}
+
+			}
+*/
+
             while (curWinPos < H) {
                 if (trySchedule<touchOccupancy, recordPort>(curWin[curWinPos], portMask)) {
                     schedCycle = curCycle + (curWinPos - curPos);
@@ -224,7 +295,7 @@ class WindowStructure {
                 }
             }
             if (curWinPos >= H) {
-                uint32_t nextWinPos = curWinPos - H;
+                nextWinPos = curWinPos - H;
                 while (nextWinPos < H) {
                     if (trySchedule<touchOccupancy, recordPort>(nextWin[nextWinPos], portMask)) {
                         schedCycle = curCycle + (nextWinPos + H - curPos);
@@ -365,7 +436,7 @@ class OOOCore : public Core {
 
         uint64_t phaseEndCycle; //next stopping point
 
-        uint64_t curCycle; //this model is issue-centric; curCycle refers to the current issue cycle
+        uint64_t curCycle, prevCurCycle; //this model is issue-centric; curCycle refers to the current issue cycle
         uint64_t regScoreboard[MAX_REGISTERS]; //contains timestamp of next issue cycles where each reg can be sourced
 
         BblInfo* prevBbl;
@@ -384,8 +455,8 @@ class OOOCore : public Core {
         //buffers, but we split the associative component from the limited-size modeling.
         //NOTE: We do not model the 10-entry fill buffer here; the weave model should take care
         //to not overlap more than 10 misses.
-        ReorderBuffer<32, 4> loadQueue;
-        ReorderBuffer<32, 4> storeQueue;
+        ReorderBuffer<72, 4> loadQueue; //based on  https://en.wikichip.org/wiki/intel/microarchitectures/skylake_(client)
+        ReorderBuffer<56, 4> storeQueue; 
 
         uint32_t curCycleRFReads; //for RF read stalls
         uint32_t curCycleIssuedUops; //for uop issue limits
@@ -393,9 +464,11 @@ class OOOCore : public Core {
         //This would be something like the Atom... (but careful, the iw probably does not allow 2-wide when configured with 1 slot)
         //WindowStructure<1024, 1 /*size*/, 2 /*width*/> insWindow; //this would be something like an Atom, except all the instruction pairing business...
 
-        //Nehalem
-        WindowStructure<1024, 36 /*size*/> insWindow; //NOTE: IW width is implicitly determined by the decoder, which sets the port masks according to uop type
-        ReorderBuffer<128, 4> rob;
+		//https://en.wikichip.org/wiki/intel/microarchitectures/skylake_(client)#Instruction_Queue_.26_MOP-Fusion
+        WindowStructure<1024, 64 /*size*/> insWindow; //NOTE: IW width is implicitly determined by the decoder, which sets the port masks according to uop type
+
+        // rob:
+        ReorderBuffer<224, 4> rob;
 
         // Agner's guide says it's a 2-level pred and BHSR is 18 bits, so this is the config that makes sense;
         // in practice, this is probably closer to the Pentium M's branch predictor, (see Uzelac and Milenkovic,
@@ -403,7 +476,7 @@ class OOOCore : public Core {
         // where a few of the 2-level history bits are in the tag.
         // Since this is close enough, we'll leave it as is for now. Feel free to reverse-engineer the real thing...
         // UPDATE: Now pht index is XOR-folded BSHR. This has 6656 bytes total -- not negligible, but not ridiculous.
-        BranchPredictorPAg<11, 18, 14> branchPred;
+        BranchPredictorPAg<11, 21, 14> branchPred; //you need to change this: David: originally <11, 18, 14> Agner says is 21 bit history.
 
         Address branchPc;  //0 if last bbl was not a conditional branch
         bool branchTaken;
@@ -414,6 +487,8 @@ class OOOCore : public Core {
         CycleQueue<28> uopQueue;  // models issue queue
 
         uint64_t instrs, uops, bbls, approxInstrs, mispredBranches;
+		  uint64_t idqNotDeliveredStalls, intMiscRecoveryStalls, retiredUops;
+		  uint64_t fullStores, fullLoads;
 
 #ifdef OOO_STALL_STATS
         Counter profFetchStalls, profDecodeStalls, profIssueStalls;

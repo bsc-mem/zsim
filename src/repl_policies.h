@@ -91,6 +91,204 @@ class LegacyReplPolicy : public virtual ReplPolicy {
         DECL_RANK_BINDINGS;
 };
 
+/* 
+ * MN4 LLC QLRU_H11_M1_R0_U0.  Link: https://uops.info/cache.html#SKL
+ */ // R=1 for deterministic purpose I implement.  
+class MN4LLCReplPolicy : public ReplPolicy {
+    public:
+        uint32_t numLines;
+        uint32_t* age;
+
+    public:
+        explicit MN4LLCReplPolicy(uint32_t _numLines) : numLines(_numLines)  {//timestamp(1), numCands(_numCands)
+            age = gm_calloc<uint32_t>(_numLines); // define array of ages.
+
+            for (int i = 0; i < _numLines; ++i)
+            {
+                age[i]=3;
+            }
+        }
+
+        ~MN4LLCReplPolicy() {
+             gm_free(age);
+        }
+
+        void update(uint32_t id, const MemReq* req) {
+            if (age[id]>=4)
+            {
+                uint32_t tmp = age[id] - 4;
+                if (tmp>=0 && tmp<4)
+                {
+                    age[id] = tmp;
+                }
+                // age[id] = age[id] - 4;
+            }
+            else if(age[id]==2 || age[id]==3) // H11
+                age[id] = 1;
+            else
+                age[id] = 0; // priority
+        }
+
+
+        template <typename C> inline uint32_t rank(const MemReq* req, C cands) {
+            uint32_t bestCand = -1;
+            uint32_t updateAge;
+            uint32_t maximumAge;
+            // find left most that has age 3
+            for (auto ci = cands.begin(); ci != cands.end(); ci.inc()) {
+                
+                if (ci == cands.begin())
+                {
+                    bestCand = *ci; // if below condition does not works at the end best sand is the left most    
+                }
+
+                // assert(age[*ci]<=3);
+
+                if (age[*ci]>3)
+                {
+                    age[*ci] = age[*ci] - 4;   
+                }
+
+                if (age[*ci]==3)
+                {
+                    bestCand = *ci;
+                    age[*ci]=0;// does not matter we will change this later just did this for next check
+                    break;   
+                }
+            }
+
+            
+            age[bestCand]=1; // because M1 
+            // check whether the any age in candidate is 3 or not
+            updateAge=1;
+            maximumAge=0;
+            for (auto ci = cands.begin(); ci != cands.end(); ci.inc()) {
+                if (age[*ci]>3)
+                {
+                    uint32_t tmp = age[*ci] - 4; // to overcome error on consistncy in pogram. age can also be written by another thread in update()
+                    if (tmp>=0 && tmp<4)
+                    {
+                        age[*ci] = tmp;
+                    }
+
+                }
+                maximumAge = MAX(maximumAge, age[*ci]);
+                assert(age[*ci]<=3);
+                if (age[*ci]==3)
+                    updateAge=0;
+            }
+
+
+
+            if (updateAge)
+            {
+                for (auto ci = cands.begin(); ci != cands.end(); ci.inc()) {
+                    age[*ci] = age[*ci] + (3 - maximumAge);
+                }
+            }    
+
+            // age[bestCand] = age[bestCand] + 4; // to catch it in post insert update()
+
+        
+            return bestCand; 
+        }
+
+        DECL_RANK_BINDINGS;
+
+
+        void replaced(uint32_t id) {
+            age[id] = age[id] + 4;
+            // age[id] = 2; // in following update() that happens in post insert function, age will be turned into 1. just what we want...
+        }
+
+
+};
+
+/* 
+ * MN4 L2 QLRU_H00_M1_R2_U1.  Link: https://uops.info/cache.html#SKL
+ */ // check make sure M1 works fine
+class MN4L2ReplPolicy : public ReplPolicy {
+    public:
+        uint32_t numLines;
+        uint32_t* age;
+
+    public:
+        explicit MN4L2ReplPolicy(uint32_t _numLines) : numLines(_numLines)  {//timestamp(1), numCands(_numCands)
+            age = gm_calloc<uint32_t>(_numLines); // define array of ages.
+
+            for (int i = 0; i < _numLines; ++i)
+            {
+                age[i]=3;
+            }
+        }
+
+        ~MN4L2ReplPolicy() {
+             gm_free(age);
+        }
+
+        void update(uint32_t id, const MemReq* req) {
+            if(age[id]>=4) // only happen when update call is called in post insert to make sure about U1 M1 property
+                age[id] = 1;
+            else
+                age[id] = 0; // priority
+        }
+
+
+        template <typename C> inline uint32_t rank(const MemReq* req, C cands) {
+            uint32_t bestCand = -1;
+            uint32_t bestCandCandidate = -1;
+            uint32_t updateAge;
+            uint32_t maximumAge;
+            // find right most that has age 3
+            for (auto ci = cands.begin(); ci != cands.end(); ci.inc()) {
+                bestCandCandidate = *ci; // to choose right most if no age 3 is available
+
+                if (age[*ci]==3)
+                {
+                    bestCand = *ci;
+                }
+
+            }
+            if (bestCand==(uint32_t)-1)
+            {
+                bestCand = bestCandCandidate;
+            }
+
+
+            age[bestCand]=0;// does not matter we will change this later just did this for next check
+
+            // check that any age in candidate is 3 or not
+            updateAge=1;
+            maximumAge=0;
+            for (auto ci = cands.begin(); ci != cands.end(); ci.inc()) {
+                assert(age[*ci]<=3);
+                maximumAge = MAX(maximumAge, age[*ci]);
+                if (age[*ci]==3)
+                    updateAge=0;
+            }
+
+
+            if (updateAge)
+            {
+                for (auto ci = cands.begin(); ci != cands.end(); ci.inc()) {
+                    age[*ci] = age[*ci] + (3 - maximumAge);
+
+                }
+
+            }    
+            return bestCand; 
+        }
+
+        DECL_RANK_BINDINGS;
+        void replaced(uint32_t id) {
+            age[id] = 4; // in following update() that happens in post insert function, age will be turned into 1. just what we want...
+        }
+
+
+};
+
+
+
 /* Plain ol' LRU, though this one is sharers-aware, prioritizing lines that have
  * sharers down in the hierarchy vs lines not shared by anyone.
  */

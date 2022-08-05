@@ -55,6 +55,10 @@ void TimingEvent::requeue(uint64_t nextCycle) {
     zinfo->contentionSim->enqueue(this, nextCycle);
 }
 
+void TimingEvent::logJumpingCycles(uint64_t delta){
+	zinfo->requeueCycles+=delta;
+}
+
 void TimingEvent::produceCrossings(EventRecorder* evRec) {
     assert(domain != -1);
     //assert(dynamic_cast<CrossingEvent*>(this) == nullptr); //careful, expensive...

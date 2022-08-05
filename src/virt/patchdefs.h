@@ -38,7 +38,7 @@ PF(SYS_getsockname, PatchGetsockname);
 PF(SYS_connect, PatchConnect);
 
 // CPU virtualization -- cpu.cpp
-PF(SYS_getcpu, PatchGetcpu);
+//PF(SYS_getcpu, PatchGetcpu);
 PF(SYS_sched_getaffinity, PatchSchedGetaffinity);
 PF(SYS_sched_setaffinity, PatchSchedSetaffinity);
 

@@ -39,6 +39,43 @@
 #define MAX_UOP_SRC_REGS 2
 #define MAX_UOP_DST_REGS 2
 
+
+//PORT defines. You might want to change these to affect scheduling
+#define PORT_0 (0x1)
+#define PORT_1 (0x2)
+#define PORT_2 (0x4)
+#define PORT_3 (0x8)
+#define PORT_4 (0x10)
+#define PORT_5 (0x20)
+#define PORT_6 (0x40)
+#define PORT_7 (0x80)
+
+#define PORTS_01 (PORT_0 | PORT_1)
+#define PORTS_06 (PORT_0 | PORT_6)
+#define PORTS_015 (PORT_0 | PORT_1 | PORT_5)
+#define PORTS_017 (PORT_0 | PORT_1 | PORT_7)
+#define PORTS_0156 (PORT_0 | PORT_1 | PORT_5 | PORT_6)
+#define PORTS_23 (PORT_2 | PORT_3) // new
+
+#define PORTS_ALL_SNB (PORT_0 | PORT_1 | PORT_2| PORT_3 | PORT_4 | PORT_5)
+
+// Core parameters
+// TODO(dsm): Make OOOCore templated, subsuming these
+
+
+// Stages --- more or less matched to Westmere, but have not seen detailed pipe diagrams anywhare
+#define FETCH_STAGE 1
+#define DECODE_STAGE 4  // NOTE: Decoder adds predecode delays to decode
+#define ISSUE_STAGE 7
+#define DISPATCH_STAGE 13  // RAT + ROB + RS, each is easily 2 cycles
+
+#define L1D_LAT 4  // fixed, and FilterCache does not include L1 delay
+#define FETCH_BYTES_PER_CYCLE 32	//Just like SandyBridge. intel manual says L1 has 2x16, every other is 32, uop cache effect is increasing this to 32 bytes
+#define ISSUES_PER_CYCLE (6)	// allocation queue up from 4 (https://en.wikichip.org/wiki/intel/microarchitectures/skylake_(client)#Instruction_Queue_.26_MOP-Fusion) 
+#define RF_READS_PER_CYCLE 348 // RF = Register File, According to Agner, is almost unlimited now. Matching 180 int + 168 fp registers.
+
+
+
 /* NOTE this uses stronly typed enums, a C++11 feature. This saves a bunch of typecasts while keeping UopType enums 1-byte long.
  * If you use gcc < 4.6 or some other compiler, either go back to casting or lose compactness in the layout.
  */
@@ -52,10 +89,20 @@ struct DynUop {
     UopType type; //1 byte
     uint8_t portMask;
     uint8_t extraSlots; //FU exec slots
-    uint8_t pad; //pad to 4-byte multiple
+    uint8_t extraLat;  // from pad to latfelt on indirect addressing
 
     void clear();
 };  // 16 bytes. TODO(dsm): check performance with wider operands
+
+#ifdef BBL_PROFILING 
+typedef struct instruction_profile_t{
+		uint8_t  uops;
+		uint8_t  approx;
+		uint8_t  opcode;
+		uint8_t  type;
+		uint64_t count;
+} ProfileInstruction;
+#endif
 
 struct DynBbl {
 #ifdef BBL_PROFILING
@@ -131,6 +178,10 @@ class Decoder {
 #ifdef BBL_PROFILING
         static void profileBbl(uint64_t bblIdx);
         static void dumpBblProfile();
+		  static void dumpGlobalProfile(ProfileInstruction *);
+		  static void init_user_mstate();
+		  static ProfileInstruction * instruction_profiling_init();
+		  static void addUp_andfree_profileInstructions( ProfileInstruction *, ProfileInstruction *) ;
 #endif
 
     private:
@@ -140,8 +191,8 @@ class Decoder {
         /* Every emit function can produce 0 or more uops; it returns the number of uops. These are basic templates to make our life easier */
 
         //By default, these emit to temporary registers that depend on the index; this can be overriden, e.g. for moves
-        static void emitLoad(Instr& instr, uint32_t idx, DynUopVec& uops, uint32_t destReg = 0);
-        static void emitStore(Instr& instr, uint32_t idx, DynUopVec& uops, uint32_t srcReg = 0);
+        static void emitLoad(Instr& instr, uint32_t idx, DynUopVec& uops, uint32_t destReg = 0);//, uint32_t lat = 0, uint32_t portMask = 0  );
+        static void emitStore(Instr& instr, uint32_t idx, DynUopVec& uops, uint32_t srcReg = 0);//, uint32_t lat = 0, uint32_t portMask = 0 );
 
         //Emit all loads and stores for this uop
         static void emitLoads(Instr& instr, DynUopVec& uops);
@@ -169,7 +220,7 @@ class Decoder {
 
         // Some convert ops need 2 chained exec uops, though they have a single input and output
         static void emitConvert2Op(Instr& instr, DynUopVec& uops, uint32_t lat1, uint32_t lat2,
-                uint8_t ports1, uint8_t ports2);
+                uint8_t ports1, uint8_t ports2, uint8_t extraSlots1 = 0);
 
         /* Specific cases */
         static void emitXchg(Instr& instr, DynUopVec& uops);

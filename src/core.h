@@ -35,6 +35,10 @@ struct BblInfo {
     uint32_t instrs;
     uint32_t bytes;
     DynBbl oooBbl[0]; //0 bytes, but will be 1-sized when we have an element (and that element has variable size as well)
+    #ifdef BBL_PROFILING 
+    // just becase already include decoder.h
+    ProfileInstruction *exIns;
+    #endif
 };
 
 /* Analysis function pointer struct
