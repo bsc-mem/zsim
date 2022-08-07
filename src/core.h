@@ -88,6 +88,12 @@ class Core : public GlobAlloc {
         virtual void leave() {}
         virtual void join() {}
 
+        // Set configuration for no man's land problem (Rommel Sanchez et al)
+        virtual void setWriteAddressACM(uint64_t startAddress){printf("We should bever be here!\n");} //careful! this function is a hack should not be called.
+        virtual void setSortedReadAddressACM(uint64_t startAddress){printf("We should bever be here!\n");} //careful! this function is a hack should not be called.
+        virtual void setSizeOfACM(uint64_t numnerOfElement, uint64_t elementSize){printf("We should bever be here!\n");} //careful! this function is a hack should not be called.
+                
+
         virtual InstrFuncPtrs GetFuncPtrs() = 0;
 };
 

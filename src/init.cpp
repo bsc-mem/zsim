@@ -76,6 +76,7 @@
 #include "virt/port_virtualizer.h"
 #include "weave_md1_mem.h" //validation, could be taken out...
 #include "zsim.h"
+#include "acm.h"
 #include <iostream>
 
 extern void EndOfPhaseActions(); //in zsim.cpp
@@ -122,6 +123,9 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
     // Power of two sets check; also compute setBits, will be useful later
     uint32_t numSets = numLines/ways;
     uint32_t setBits = 31 - __builtin_clz(numSets);
+    // printf("cache bank size is: %d\n", bankSize);
+    // printf("numLines size is: %d\n", numLines);
+    // printf("numSets is: %d\n", numSets);
     if ((1u << setBits) != numSets) panic("%s: Number of sets must be a power of two (you specified %d sets)", name.c_str(), numSets);
 
     //Hash function
@@ -696,7 +700,18 @@ static void InitSystem(Config& config) {
 
                     // section added for no mans land (Rommel Sanchez et al)
                     uint32_t delayQueue = config.get<uint32_t>("sys.mem.delayQueue", 0);
-                    dc->setAncestors(mems, delayQueue);
+                    // section added for ACM@rowBuffer
+                    ACMInfo acmInfo;
+                    acmInfo.sortedReadLatency = config.get<uint32_t>("sys.mem.acm.sortedReadLatency", 7);
+                    acmInfo.sortedWriteLatency = config.get<uint32_t>("sys.mem.acm.sortedWriteLatency", 10);
+
+                    
+                    // ACM@rowBuffer (enable it or desable it from config file)
+                    if (config.get<bool>("sys.mem.acm.enabled", false)){
+                        dc->setAncestors(mems, delayQueue, acmInfo);
+                    } else {
+                        dc->setAncestors(mems, delayQueue);
+                    }
 
                     //Build the core
                     if (type == "Simple") {

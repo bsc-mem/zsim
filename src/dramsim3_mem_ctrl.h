@@ -34,6 +34,7 @@
 #include "memory_hierarchy.h"
 #include "pad.h"
 #include "stats.h"
+#include "acm.h"
 
 namespace dramsim3
 {
@@ -69,6 +70,8 @@ class DRAMsim3Memory : public MemObject
 
     uint64_t curCycle; //processor cycle, used in callbacks
     uint64_t dramCycle;
+    uint64_t ACMAvailCycle; // When ACM@RowBuffer is free.
+    uint64_t ACMMinLatency;
 
     // R/W stats
     PAD();
@@ -88,7 +91,12 @@ class DRAMsim3Memory : public MemObject
 
     // Record accesses
     uint64_t access(MemReq &req);
+    uint64_t accessACM(MemReq& req); // ACM@RowBuffer access function
     void setDRAMsimConfiguration(uint32_t delayQueue); // Enable sim config in DRAMsim3 side.
+    void setDRAMsimConfigurationWithACM(ACMInfo& acmInfo, uint32_t delayQueue); // Enable ACM@RowBuffer in DRAMsim3 side.
+    void setWriteAddressACM(Address startAddress);
+    void setSortedReadAddressACM(uint64_t startAddress);
+    void setSizeOfACM(uint64_t numnerOfElement, uint64_t elementSize);
     // Event-driven simulation (phase 2)
     uint32_t tick(uint64_t cycle);
     void enqueue(DRAMsim3AccEvent *ev, uint64_t cycle);
@@ -124,6 +132,34 @@ class SplitAddrMemory : public MemObject
     {
         // printf("size of mems available at ZSim side is: %d \n", mems.size()); // size is two
         mems[0]->setDRAMsimConfiguration(delayQueue);
+    }
+
+    // ACM@RowBuffer currently managed by only one MC.
+    void setDRAMsimConfigurationWithACM(ACMInfo& acmInfo, uint32_t delayQueue)
+    {
+        // printf("size of mems available at ZSim side is: %d \n", mems.size()); // size is two
+        mems[0]->setDRAMsimConfigurationWithACM(acmInfo, delayQueue);
+    }
+
+    void setWriteAddressACM(Address startAddress)
+    {
+        mems[0]->setWriteAddressACM(startAddress);
+    }
+
+    void setSortedReadAddressACM(uint64_t startAddress)
+    {
+        mems[0]->setSortedReadAddressACM(startAddress);
+    }
+
+    void setSizeOfACM(uint64_t numnerOfElement, uint64_t elementSize)
+    {
+        mems[0]->setSizeOfACM(numnerOfElement, elementSize);
+    }
+
+    // ACM@RowBuffer currently managed by only one MC.
+    uint64_t accessACM(MemReq& req)
+    {
+        mems[0]->accessACM(req);
     }
 
     uint64_t access(MemReq &req)

@@ -30,6 +30,7 @@
 
 #include <stdint.h>
 #include "g_std/g_vector.h"
+#include "acm.h"// for setDRAMsimConfigurationWithACM, for ACM data type
 #include "galloc.h"
 #include "locks.h"
 
@@ -122,8 +123,20 @@ class Network;
 /* Base class for all memory objects (caches and memories) */
 class MemObject : public GlobAlloc {
     public:
+        // ACM@rowBuffer (for bypassing cache to memory controller) -- careful! this function is a hack should not be called. only implemented version in dramsim controller should be called to bypass the cache
+        virtual uint64_t accessACM(MemReq& req){ return 0;}
         // Set configuration for no man's problem solution
         virtual void setDRAMsimConfiguration(uint32_t delayQueue){printf("enable dramsim3 in memory hierarchy. Wrong\n");} //careful! this function is a hack should not be called.
+        // Enable ACM@RowBuffer in DRAMsim3 side.
+        virtual void setDRAMsimConfigurationWithACM(ACMInfo& acmInfo, uint32_t delayQueue){printf("enable acm in memory hierarchy. Wrong\n");} //careful! this function is a hack should not be called.
+        // Set ACM@RowBuffer configuration in DRAMsim3 side.
+        virtual void setACMConfigurationinDRAMsim(){printf("enable acm in memory hierarchy. Wrong\n");} //careful! this function is a hack should not be called.
+        // Set ACM@RowBuffer write start address
+        virtual void setWriteAddressACM(Address startAddress) {printf("enable dramsim3 in memory hierarchy. Wrong\n");}
+        virtual void setSortedReadAddressACM(uint64_t startAddress) {printf("enable dramsim3 in memory hierarchy. Wrong\n");}
+        // Set size of ACM@RowBuffer
+        virtual void setSizeOfACM(uint64_t numnerOfElement, uint64_t elementSize) {printf("enable dramsim3 in memory hierarchy. Wrong\n");}
+
         //Returns response cycle
         virtual uint64_t access(MemReq& req) = 0;
         virtual void initStats(AggregateStat* parentStat) {}

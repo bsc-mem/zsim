@@ -517,6 +517,11 @@ class OOOCore : public Core {
         uint64_t getPhaseCycles() const;
         uint64_t getCycles() const {return cRec.getUnhaltedCycles(curCycle);}
 
+        // for ACM API: set write/read address, set size of Data-RAM of ACM
+        void setWriteAddressACM(Address startAddress);
+        void setSortedReadAddressACM(uint64_t startAddress); 
+        void setSizeOfACM(uint64_t numnerOfElement, uint64_t elementSize);
+
         void contextSwitch(int32_t gid);
 
         virtual void join();

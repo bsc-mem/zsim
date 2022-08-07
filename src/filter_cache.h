@@ -30,6 +30,7 @@
 #include "cache.h"
 #include "galloc.h"
 #include "zsim.h"
+#include "acm.h"
 
 /* Extends Cache with an L0 direct-mapped cache, optimized to hell for hits
  *
@@ -57,10 +58,16 @@ class FilterCache : public Cache {
         uint32_t numSets;
         uint32_t srcId; //should match the core
         uint32_t reqFlags;
-        g_vector<MemObject*> ancestors; // Bypass cache system with a pointer to send informaiton to DRAMsim3
+        g_vector<MemObject*> ancestors; // ACM@rowBuffer (Bypass cache system with a pointer)
         lock_t filterLock;
         uint64_t fGETSHit, fGETXHit;
 
+        bool ACMEnable; // ACM@rowBuffer Enable bit
+        uint64_t ACMAllocatedSpace; // ACM@rowBuffer DATA-RAM memory size
+        uint32_t ACMRecordSize;
+        uint64_t ConventionalPerspectiveStartAddress;
+        uint64_t SortedPerspectiveStartAddress;
+       
     public:
         FilterCache(uint32_t _numSets, uint32_t _numLines, CC* _cc, CacheArray* _array,
                 ReplPolicy* _rp, uint32_t _accLat, uint32_t _invLat, g_string& _name)
@@ -74,6 +81,63 @@ class FilterCache : public Cache {
             fGETSHit = fGETXHit = 0;
             srcId = -1;
             reqFlags = 0;
+            ACMEnable = 0;
+            ACMAllocatedSpace=0;
+            ConventionalPerspectiveStartAddress=0;
+            SortedPerspectiveStartAddress=0;
+        }
+
+        // ACM@rowBuffer virtual address space
+        int is_ACM_conventional_perspective_accessed(Address vAddr) {
+            if((Address)ConventionalPerspectiveStartAddress <= vAddr && vAddr < (Address)ConventionalPerspectiveStartAddress+(Address)ACMAllocatedSpace)
+                return 1;
+            else
+                return 0;
+        }
+
+        // ACM@rowBuffer virtual address space
+        int is_ACM_sorted_perspective_accessed(Address vAddr) {
+            if((Address)SortedPerspectiveStartAddress <= vAddr && vAddr < (Address)SortedPerspectiveStartAddress+(Address)ACMAllocatedSpace)
+                return 1;
+            else
+                return 0;
+        }
+
+        void setWriteAddressACM(Address startAddress) {
+            // cout<< "filter cache of core " << srcId << " with start address of sortedWrite " << startAddress << endl;
+            ConventionalPerspectiveStartAddress=startAddress;
+            for (uint32_t p = 0; p < ancestors.size(); p++) {
+                ancestors[p]->setWriteAddressACM(startAddress);
+            }
+        }
+
+        void setSortedReadAddressACM(uint64_t startAddress){
+            // cout<< "filter cache of core " << srcId << " with start address of sortedRead " << startAddress << endl;
+            SortedPerspectiveStartAddress=startAddress;
+            for (uint32_t p = 0; p < ancestors.size(); p++) {
+                ancestors[p]->setSortedReadAddressACM(startAddress);
+            }
+        }
+
+        void setSizeOfACM(uint64_t numnerOfElement, uint64_t elementSize) {
+            // cout<< "filter cache of core " << srcId << "  numnerOfElement  " << numnerOfElement << " elementSize " << elementSize << endl;
+            ACMRecordSize=elementSize;
+            ACMAllocatedSpace=numnerOfElement*elementSize;
+            for (uint32_t p = 0; p < ancestors.size(); p++) {
+                ancestors[p]->setSizeOfACM(numnerOfElement, elementSize);
+            }
+        }
+        
+        // ACM@rowBuffer (Bypass cache system with a pointer) and enable ACM
+        void setAncestors(const g_vector<MemObject*>& _parents, uint32_t delayQueue, ACMInfo& acmInfo){
+            ACMEnable = 1;
+            // ACMAllocatedSpace = acmInfo.ACMAllocatedSpace;
+            // ACMRecordSize = acmInfo.recordSize;
+            ancestors.resize(_parents.size());
+            for (uint32_t p = 0; p < ancestors.size(); p++) {
+                ancestors[p] = _parents[p];
+                ancestors[p]->setDRAMsimConfigurationWithACM(acmInfo, delayQueue);
+            }
         }
 
         // Configure No man's land delay (Rommel Sanchez et al)
@@ -107,6 +171,20 @@ class FilterCache : public Cache {
         }
 
         inline uint64_t load(Address vAddr, uint64_t curCycle) {
+            
+            /*                     Start of ACM@rowBuffer                   */
+            // study more the implications of Sorted Read for Records that are big 
+            if(is_ACM_sorted_perspective_accessed(vAddr)&&vAddr%ACMRecordSize<64) {
+                //ACMSortedReadAccess++;
+                if(vAddr%ACMRecordSize)
+                    return curCycle;
+                Address vLineAddr = vAddr >> lineBits;
+                uint32_t idx = vLineAddr & setMask;
+                uint64_t results = replaceACM(vLineAddr, idx, true, curCycle) + 5*L1D_LAT ; // later L1D_LAT should be change to some other constant...
+                return results;
+            }
+            /*                     End of ACM@rowBuffer                   */
+
             Address vLineAddr = vAddr >> lineBits;
             uint32_t idx = vLineAddr & setMask;
             uint64_t availCycle = filterArray[idx].availCycle; //read before, careful with ordering to avoid timing races
@@ -119,6 +197,18 @@ class FilterCache : public Cache {
         }
 
         inline uint64_t store(Address vAddr, uint64_t curCycle) {
+
+            /*                     Start of ACM@rowBuffer                   */
+            if(is_ACM_conventional_perspective_accessed(vAddr)&&vAddr%ACMRecordSize<64) {                
+                if(vAddr%ACMRecordSize)
+                    return curCycle;
+                Address vLineAddr = vAddr >> lineBits;
+                uint32_t idx = vLineAddr & setMask;
+                uint64_t results = replaceACM(vLineAddr, idx, false, curCycle) + L1D_LAT ;
+            	return results;
+            }
+            /*                     End of ACM@rowBuffer                   */
+
             Address vLineAddr = vAddr >> lineBits;
             uint32_t idx = vLineAddr & setMask;
             uint64_t availCycle = filterArray[idx].availCycle; //read before, careful with ordering to avoid timing races
@@ -130,6 +220,18 @@ class FilterCache : public Cache {
             } else {
                 return replace(vLineAddr, idx, false, curCycle);
             }
+        }
+
+        // ACM@rowBuffer (For sorted perspective accesses arrive here and bypass the cache hierarchy)
+        uint64_t replaceACM(Address vLineAddr, uint32_t idx, bool isLoad, uint64_t curCycle) {
+            Address pLineAddr = procMask | vLineAddr;
+            MESIState dummyState = MESIState::I;
+            uint64_t respCycle;
+            futex_lock(&filterLock);
+            MemReq req = {pLineAddr, isLoad? GETX : PUTX, 0, &dummyState, curCycle, &filterLock, dummyState, srcId, reqFlags};
+            respCycle  = ancestors[0]->accessACM(req); 
+            futex_unlock(&filterLock);
+            return respCycle;
         }
 
         uint64_t replace(Address vLineAddr, uint32_t idx, bool isLoad, uint64_t curCycle) {

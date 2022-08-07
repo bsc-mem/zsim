@@ -78,6 +78,8 @@ DRAMsim3Memory::DRAMsim3Memory(std::string& ConfigName, std::string& OutputDir,
     dramPs = 0;
     cpuPs = 0;
     minLatency = 1;
+    ACMAvailCycle = 0; // ACM@RowBuffer return cycle for Bound phase.
+    ACMMinLatency = 0; // ACM@RowBuffer fix the interface for Bound-Weave model
     // NOTE: this will alloc DRAM on the heap and not the glob_heap, make sure only one process ever handles this
     callBackFn = std::bind(&DRAMsim3Memory::DRAM_read_return_cb, this, std::placeholders::_1);
 
@@ -115,6 +117,101 @@ void DRAMsim3Memory::setDRAMsimConfiguration(uint32_t delayQueue)
 {
     dramCore->setDelayQueue(delayQueue);
 } 
+
+// Enable ACM@RowBuffer in DRAMsim3 side.
+void DRAMsim3Memory::setDRAMsimConfigurationWithACM(ACMInfo& acmInfo, uint32_t delayQueue)
+{
+    //printf("ACM is Enabled in DRAMsim3Cntrl at ZSim part\n");
+    dramCore->EnableACMatRowBuffer(&acmInfo);
+    setDRAMsimConfiguration(delayQueue);
+}
+
+void DRAMsim3Memory::setWriteAddressACM(Address startAddress) 
+{
+    // cout << "dramsim3_mem_ctrl setWriteAddressACM " << startAddress <<endl;
+    dramCore->setWriteAddressACM(startAddress); 
+}
+
+void DRAMsim3Memory::setSortedReadAddressACM(uint64_t startAddress)
+{
+    // cout << "dramsim3_mem_ctrl setSortedReadAddressACM " << startAddress <<endl;
+    dramCore->setSortedReadAddressACM(startAddress); 
+}
+
+void DRAMsim3Memory::setSizeOfACM(uint64_t numnerOfElement, uint64_t elementSize)
+{
+    // cout << "dramsim3_mem_ctrl setSizeOfACM numnerOfElement: " << numnerOfElement << "elementSize" << elementSize <<endl;
+    dramCore->setSizeOfACM(numnerOfElement, elementSize); 
+}
+
+uint64_t DRAMsim3Memory::accessACM(MemReq &req)
+{
+    // NOTE so you basicall cannot access draoCore->*
+    // in this function (or this phase I assume) otherwise
+    // you break some weird memory and pin will try to kill you, like, what?
+    // printf("accessACM in dramsim3 side\n");
+    switch (req.type)
+    {
+    case PUTS:
+    case PUTX:
+        *req.state = I;
+        break;
+    case GETS:
+        *req.state = req.is(MemReq::NOEXCL) ? S : E;
+        break;
+    case GETX:
+        *req.state = M;
+        break;
+
+    default:
+        panic("!?");
+    }
+
+    // TODO make this dynamic
+    uint64_t respCycle = req.cycle ;// + minLatency;
+
+    if ((req.type != PUTS /*discard clean writebacks*/) && zinfo->eventRecorders[req.srcId])
+    {
+        // line below may generate error be careful...!
+        Address addr = req.lineAddr << lineBits; // exact address in dramsim3 side for ACM@RowBuffer
+        uint64_t hexAddr = (uint64_t)addr;
+        // DS3Request dramReq(hexAddr, req.cycle);
+        // dramReq.channel = hexAddr & channelMask;
+        // dramReq.rank = hexAddr & rankMask;
+        // dramReq.bank = hexAddr & bankMask;
+        // dramReq.row = hexAddr & rowMask;
+        // if (requestQueues.count(dramReq.channel) == 0) {
+        //     // BankQueue bankQ;
+        //     g_vector<DS3Request> bankQ;
+        //     bankQ.push_back(dramReq);
+        //     RankQueue rankQueue;
+        //     rankQueue.emplace(dramReq.bank, bankQ);
+        //     ChannelQueue chanQueue;
+        //     chanQueue.emplace(dramReq.rank, rankQueue);
+        //     requestQueues.emplace(dramReq.channel, chanQueue);
+        // }
+        bool isWrite = (req.type == PUTX);
+        DRAMsim3AccEvent *memEv = new (zinfo->eventRecorders[req.srcId]) DRAMsim3AccEvent(this, isWrite, addr, domain);
+        memEv->setMinStartCycle(req.cycle);
+        TimingRecord tr = {addr, req.cycle, respCycle, req.type, memEv, memEv};
+        zinfo->eventRecorders[req.srcId]->pushRecord(tr);
+    }
+
+
+    // hack when in case we overflow the PIM engine in DRAMsim3
+   /* if (dramCore->GetACMDelayforZSimBoundPhase()>10000)
+    {
+         std::cout<<dramCore->GetACMDelayforZSimBoundPhase()<<std::endl;
+         ACMMinLatency=30; // adding some latency to make sure the buffer is not full
+    }
+    else
+    {
+         ACMMinLatency=0;
+    }
+    */
+    
+    return respCycle + ACMMinLatency;
+}
 
 uint64_t DRAMsim3Memory::access(MemReq &req)
 {

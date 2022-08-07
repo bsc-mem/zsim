@@ -143,6 +143,7 @@ VOID SimThreadFini(THREADID tid);
 VOID SimEnd();
 
 VOID HandleMagicOp(THREADID tid, ADDRINT op);
+VOID HandleMagicOpVersion2(ADDRINT op1, ADDRINT op2, ADDRINT op3); // new custom magic function added with more input
 
 VOID FakeCPUIDPre(THREADID tid, REG eax, REG ecx);
 VOID FakeCPUIDPost(THREADID tid, ADDRINT* eax, ADDRINT* ebx, ADDRINT* ecx, ADDRINT* edx); //REG* eax, REG* ebx, REG* ecx, REG* edx);
@@ -581,6 +582,13 @@ VOID Instruction(INS ins) {
         //info("Instrumenting magic op");
         INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) HandleMagicOp, IARG_THREAD_ID, IARG_REG_VALUE, REG_ECX, IARG_END);
     }
+    // add another type of magic function
+    if (INS_IsXchg(ins) && INS_OperandReg(ins, 0) == REG_ECX && INS_OperandReg(ins, 1) == REG_ECX) {
+        //info("Instrumenting magic op");
+        // to know more about how to pass different arguments with different datatype
+        // https://people.cs.vt.edu/~gback/cs6304.spring07/pin2/Doc/Pin/html/group__INST__ARGS.html#g089c27ca15e9ff139dd3a3f8a6f8451d
+        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) HandleMagicOpVersion2, IARG_REG_VALUE, REG_RAX, IARG_REG_VALUE, REG_RBX,IARG_REG_VALUE, REG_RCX, IARG_END);
+    }
 
     if (INS_Opcode(ins) == XED_ICLASS_CPUID) {
        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) FakeCPUIDPre, IARG_THREAD_ID, IARG_REG_VALUE, REG_EAX, IARG_REG_VALUE, REG_ECX, IARG_END);
@@ -597,7 +605,21 @@ VOID Instruction(INS ins) {
     VdsoInstrument(ins);
 }
 
+/*
+VOID addUp_andfree_profileInstructions(ProfileInstruction *gblProf, ProfileInstruction *fromBbl) {
+		
+	uint16_t i;//,max_opcodes; 
 
+	//max_opcodes =  xed_iform_enum_t_last() +2 ;
+
+	for ( i = 1 ; i < gblProf[0].count ; i++ ) {
+		gblProf[i].count +=  fromBbl[i].count;
+		gblProf[i].approx =  fromBbl[i].approx ;
+	}
+
+	free(fromBbl);
+}
+*/
 VOID Trace(TRACE trace, VOID *v) {
     if (!procTreeNode->isInFastForward() || !zinfo->ffReinstrument) {
         // Visit every basic block in the trace
@@ -1208,6 +1230,25 @@ VOID HandleMagicOp(THREADID tid, ADDRINT op) {
             panic("Thread %d issued unknown magic op %ld!", tid, op);
     }
 }
+
+// only tested for ooo_core. This is a funcion to handle new magic operations with more input argument
+VOID HandleMagicOpVersion2(ADDRINT op1, ADDRINT op2, ADDRINT op3) {
+
+    if (op1==0) {
+        for (int i = 0; i < zinfo->numCores; ++i)
+            zinfo->cores[i]->setWriteAddressACM(op2);
+    }
+    else if (op1==1) { // number of element, size of element 
+        for (int i = 0; i < zinfo->numCores; ++i)
+            zinfo->cores[i]->setSizeOfACM(op2, op3);
+    }
+    else if (op1==2) {  
+        for (int i = 0; i < zinfo->numCores; ++i)
+            zinfo->cores[i]->setSortedReadAddressACM(op2);
+    }
+
+}
+
 
 //CPUIID faking
 static uint32_t cpuidEax[MAX_THREADS];

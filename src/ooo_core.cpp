@@ -123,6 +123,18 @@ void OOOCore::initStats(AggregateStat* parentStat) {
 uint64_t OOOCore::getInstrs() const {return instrs;}
 uint64_t OOOCore::getPhaseCycles() const {return curCycle % zinfo->phaseLength;}
 
+void OOOCore::setWriteAddressACM(Address startAddress) {
+    l1d->setWriteAddressACM(startAddress);
+}
+
+void OOOCore::setSortedReadAddressACM(uint64_t startAddress) {
+    l1d->setSortedReadAddressACM(startAddress);
+}
+
+void OOOCore::setSizeOfACM(uint64_t numnerOfElement, uint64_t elementSize) {
+    l1d->setSizeOfACM(numnerOfElement, elementSize);
+}
+
 void OOOCore::contextSwitch(int32_t gid) {
     if (gid == -1) {
         // Do not execute previous BBL, as we were context-switched
