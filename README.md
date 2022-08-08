@@ -1,3 +1,21 @@
+zsim+DRAMsim3 simulation infrastructure for Skylake microarchitecture
+=====================================================================
+
+zsim+DRAMsim3 simulation infrastructure is built on top of zsim and DRAMsim3 
+simulators. Zsim initially developed to simulate Intel Westmere architecture, 
+is upgraded to simulate the Intel Xeon Platinum 8160 processor which is based 
+on Skylake microarchitecture. To accurately model Intel Xeon Platinum 8160 
+processor, many enhancements is done in the ZSim pipeline, cache hierarchy 
+and main memory interface. To simulate the CPU and main memory accurately, 
+zsim is connected to enhanced version of DRAMsim3 available at following 
+repository:
+
+https://github.com/bsc-mem/DRAMsim3.
+
+
+
+
+
 zsim
 ====
 
