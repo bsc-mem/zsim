@@ -25,7 +25,7 @@ and uses DBT extensively, resulting in speeds of hundreds of millions of
 instructions/second in a modern multicore host. Unlike conventional simulators,
 zsim is organized to scale well (almost linearly) with simulated core count.
 
-You can find more details about zsim in our ISCA 2013 paper:
+You can find more details about zsim in ISCA 2013 paper:
 http://people.csail.mit.edu/sanchez/papers/2013.zsim.isca.pdf.
 
 
